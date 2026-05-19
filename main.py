@@ -1,23 +1,26 @@
-
-
-
-from fastapi import FastAPI
-from pydantic import BaseModel
+import os
+import uvicorn
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import IsolationForest
-import uvicorn
-import google.generativeai as genai
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import pandas as pd
-import numpy as np
 from sklearn.ensemble import IsolationForest
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file (for local testing)
+load_dotenv()
 
 app = FastAPI(title="AI Engine Anomaly Detector & Mechanic")
 
-# --- CONFIGURE YOUR AI ---
-genai.configure(api_key="AIzaSyBgm7c9-4FMzSPrFyluuXYNja9Z7pbfV6I")
+# --- CONFIGURE YOUR AI SECURELY ---
+# Pull the secret key from the environment, NEVER hardcode it!
+api_key = os.environ.get("GEMINI_API_KEY")
+
+if not api_key:
+    raise ValueError("CRITICAL ERROR: No API key found! Make sure GEMINI_API_KEY is set in your environment variables.")
+
+genai.configure(api_key=api_key)
 llm_model = genai.GenerativeModel('gemini-3.1-flash-lite')
 
 # --- DATA MODELS ---
@@ -36,10 +39,25 @@ class DtcChatRequest(BaseModel):
     dtc_codes: list[str]
     user_message: str = ""
 
-# NEW: Data model for the Home Screen Chat
 class GeneralChatRequest(BaseModel):
     prompt: str
     context: str
+
+# --- ML MODEL SETUP ---
+# 1. Simulate a "Healthy" Engine Baseline for FYP Training
+healthy_baseline = pd.DataFrame({
+    'rpm': [800, 2000, 2500, 3000, 850, 1500, 2200],
+    'speed': [0, 40, 60, 80, 0, 30, 50],
+    'load': [20, 40, 50, 60, 25, 35, 45],
+    'coolant': [90, 92, 95, 93, 91, 90, 94],
+    'intake': [30, 35, 40, 38, 32, 33, 36],
+    'throttle': [10, 20, 25, 30, 12, 18, 22]
+})
+
+# Initialize and train the Isolation Forest
+ml_model = IsolationForest(contamination=0.1, random_state=42)
+ml_model.fit(healthy_baseline)
+
 
 # --- ENDPOINTS ---
 
@@ -75,36 +93,13 @@ def ai_mechanic_chat(req: DtcChatRequest):
         return {"status": "error", "reply": f"Sorry, the AI mechanic is currently unavailable. Error: {str(e)}"}
     
 
-
-
-
-# ... [Your existing imports, AI setup, and Chat endpoints] ...
-
-# 1. Simulate a "Healthy" Engine Baseline for FYP Training
-# In a real commercial app, you would load a .pkl file of a pre-trained model.
-# For your FYP defense, we train it on the fly with "normal" driving data.
-healthy_baseline = pd.DataFrame({
-    'rpm': [800, 2000, 2500, 3000, 850, 1500, 2200],
-    'speed': [0, 40, 60, 80, 0, 30, 50],
-    'load': [20, 40, 50, 60, 25, 35, 45],
-    'coolant': [90, 92, 95, 93, 91, 90, 94],
-    'intake': [30, 35, 40, 38, 32, 33, 36],
-    'throttle': [10, 20, 25, 30, 12, 18, 22]
-})
-
-# Initialize and train the Isolation Forest
-ml_model = IsolationForest(contamination=0.1, random_state=42)
-ml_model.fit(healthy_baseline)
-
 # 2. THE ML ANALYSIS ENDPOINT
 @app.post("/analyze")
 def analyze_telemetry(data: TelemetryData):
     try:
-        # Convert incoming Flutter data to a DataFrame
-        current_data = pd.DataFrame([data.model_dump()]) # Use .dict() if using older Pydantic
+        current_data = pd.DataFrame([data.model_dump()]) 
         
         # --- A. ANOMALY DETECTION (Machine Learning) ---
-        # Predict returns 1 for normal, -1 for anomaly
         prediction = ml_model.predict(current_data)[0]
         is_anomaly = bool(prediction == -1)
         
@@ -127,7 +122,6 @@ def analyze_telemetry(data: TelemetryData):
 
         # --- C. AI DIAGNOSTIC SYNTHESIS ---
         if is_anomaly and not warnings:
-            # The ML model caught something the hardcoded rules missed!
             ai_diagnosis = "Invisible Anomaly Detected: Sensor patterns deviate from healthy baseline. Recommend early inspection."
         elif is_anomaly and warnings:
             ai_diagnosis = f"Active Threat: {warnings[0]}"
@@ -146,7 +140,7 @@ def analyze_telemetry(data: TelemetryData):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# 2. NEW: Home Screen General Chat Endpoint
+# 3. Home Screen General Chat Endpoint
 @app.post("/chat")
 def general_ai_chat(req: GeneralChatRequest):
     prompt = f"""
@@ -170,5 +164,4 @@ def general_ai_chat(req: GeneralChatRequest):
 
 # --- RUNNER ---
 if __name__ == "__main__":
-    # The reload=True flag forces the server to update immediately when you hit Save!
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
